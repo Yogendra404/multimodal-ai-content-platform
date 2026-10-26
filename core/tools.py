@@ -1,4 +1,5 @@
-from .llm import generate
+import json
+from .llm import chat
 
 TOOL_LOG: list[dict] = []   # the eval harness reads this
 
@@ -36,6 +37,30 @@ def suggest_hashtags(topic: str) -> list[str]:
 
 
 TOOLS = [extract_keywords, reading_time, suggest_hashtags]
+REGISTRY = {f.__name__: f for f in TOOLS}
+
+# OpenAI needs a JSON description of each tool
+TOOLS_SPEC = [
+    {"type": "function", "function": {
+        "name": "extract_keywords",
+        "description": "Return the most frequent meaningful keywords from the text.",
+        "parameters": {"type": "object", "properties": {
+            "text": {"type": "string", "description": "Text to analyse"},
+            "top_n": {"type": "integer", "description": "How many keywords (default 5)"}},
+            "required": ["text"]}}},
+    {"type": "function", "function": {
+        "name": "reading_time",
+        "description": "Estimate the reading time of a text, in seconds.",
+        "parameters": {"type": "object", "properties": {
+            "text": {"type": "string", "description": "Text to measure"}},
+            "required": ["text"]}}},
+    {"type": "function", "function": {
+        "name": "suggest_hashtags",
+        "description": "Suggest 5 hashtags for a topic.",
+        "parameters": {"type": "object", "properties": {
+            "topic": {"type": "string", "description": "The topic"}},
+            "required": ["topic"]}}},
+]
 
 SYSTEM = ("You are a content agent. Use your tools when they help: "
           "extract_keywords to ground the piece, reading_time to check length, "
@@ -43,8 +68,36 @@ SYSTEM = ("You are a content agent. Use your tools when they help: "
           "flagged uncertain, do not state them as fact.")
 
 
-def run_agent(request: str, context: str = "") -> dict:
+def run_agent(request: str, context: str = "", max_steps: int = 5) -> dict:
     TOOL_LOG.clear()
     prompt = f"{context}\n\nTASK: {request}" if context else request
-    answer = generate(prompt, system=SYSTEM, tools=TOOLS)
-    return {"answer": answer, "tool_calls": list(TOOL_LOG)}
+    messages = [{"role": "system", "content": SYSTEM},
+                {"role": "user", "content": prompt}]
+
+    for _ in range(max_steps):
+        msg = chat(messages, tools=TOOLS_SPEC)
+        if not msg.tool_calls:
+            return {"answer": msg.content or "", "tool_calls": list(TOOL_LOG)}
+
+        # keep the assistant's tool request in the conversation
+        messages.append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": [{"id": tc.id, "type": "function",
+                            "function": {"name": tc.function.name,
+                                         "arguments": tc.function.arguments}}
+                           for tc in msg.tool_calls],
+        })
+        # run each requested tool and send the result back
+        for tc in msg.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+                result = REGISTRY[tc.function.name](**args)
+            except Exception as e:
+                result = f"Tool error: {e}"
+            messages.append({"role": "tool", "tool_call_id": tc.id,
+                             "content": json.dumps(result)})
+
+    # step limit reached: ask for the final text without tools
+    msg = chat(messages)
+    return {"answer": msg.content or "", "tool_calls": list(TOOL_LOG)}

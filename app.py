@@ -1,3 +1,7 @@
+
+from dotenv import load_dotenv
+load_dotenv()
+
 import streamlit as st
 from core.pipeline import run_pipeline, FORMATS
 from core.eval_harness import run_evals
