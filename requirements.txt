@@ -1,6 +1,6 @@
-streamlit>=1.40
-google-genai
-edge-tts
+streamlit
+openai
+python-dotenv
 pillow
+edge-tts
 pandas
-
